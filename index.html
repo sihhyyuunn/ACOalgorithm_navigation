@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACO Navigation System</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 80%;
+            display: flex;
+            justify-content: space-between;
+        }
+        .form-container {
+            width: 20%;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #ccc;
+        }
+        #map {
+            height: 500px;
+            width: 60%;
+            margin-top: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>ACO Navigation System</h1>
+    <div class="container">
+        <div class="form-container">
+            <div class="input-group">
+                <label for="start_location">출발지 (0부터 19까지의 정수):</label>
+                <input type="number" id="start_location" min="0" max="19" required>
+            </div>
+            <div class="input-group">
+                <label for="end_location">도착지 (0부터 19까지의 정수):</label>
+                <input type="number" id="end_location" min="0" max="19" required>
+            </div>
+            <button id="findRouteBtn" onclick="findRoute()">경로 찾기</button>
+            <h2>결과</h2>
+            <p id="result"></p>
+        </div>
+        <div id="map"></div>
+    </div>
+    <div style="margin-top: 20px;">
+        <h2>초기 페로몬 수치</h2>
+        <table id="initialPheromoneTable">
+            <thead>
+                <tr>
+                    <th>노드</th>
+                    <!-- Columns will be dynamically added here -->
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Rows will be inserted here by JavaScript -->
+            </tbody>
+        </table>
+        <h2>최종 페로몬 수치</h2>
+        <table id="finalPheromoneTable">
+            <thead>
+                <tr>
+                    <th>노드</th>
+                    <!-- Columns will be dynamically added here -->
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Rows will be inserted here by JavaScript -->
+            </tbody>
+        </table>
+    </div>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        const numLocations = 20;
+        const numAnts = 100;
+        const numIterations = 200;
+        const alpha = 1.0;
+        const beta = 2.0;
+        const evaporationRate = 0.2;
+
+        const coordinates = [
+            [37.5665, 126.9780], // 서울 시청
+            [37.5700, 126.9830], // 경복궁
+            [37.5512, 126.9882], // 남산서울타워
+            [37.5600, 126.9369], // 홍대
+            [37.5214, 127.0220], // 강남역
+            [37.5759, 126.9769], // 북촌 한옥마을
+            [37.5714, 126.9658], // 인사동
+            [37.5285, 126.9816], // 이태원
+            [37.5663, 126.9827], // 종로
+            [37.5796, 126.9770], // 삼청동
+            [37.5760, 126.9850], // 창덕궁
+            [37.5499, 126.9410], // 이화여대
+            [37.5117, 127.0592], // 코엑스
+            [37.5509, 127.0738], // 서울숲
+            [37.5455, 127.0810], // 건국대
+            [37.5559, 126.9363], // 연세대
+            [37.5786, 126.9719], // 서대문
+            [37.5666, 126.9784], // 덕수궁
+            [37.5610, 126.9997], // 동대문디자인플라자
+            [37.5602, 127.0347]  // 삼성동
+        ];
+
+        const costMatrix = createCostMatrix(numLocations, coordinates);
+        const trafficjamMatrix = createTrafficjamMatrix(numLocations);
+
+        const map = L.map('map').setView([37.5665, 126.9780], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        coordinates.forEach((coord, index) => {
+            L.marker([coord[0], coord[1]]).addTo(map)
+                .bindPopup(`Location ${index}`)
+                .openPopup();
+        });
+
+        let currentPolyline = null;
+
+        function createCostMatrix(numLocations, coordinates) {
+            const costMatrix = Array.from({ length: numLocations }, () => Array(numLocations).fill(0));
+            for (let i = 0; i < numLocations; i++) {
+                for (let j = 0; j < numLocations; j++) {
+                    if (i !== j) {
+                        costMatrix[i][j] = haversineDistance(coordinates[i], coordinates[j]);
+                    }
+                }
+            }
+            return costMatrix;
+        }
+
+        function haversineDistance(coord1, coord2) {
+            const R = 6371; // 지구의 반경 (킬로미터)
+            const dLat = toRad(coord2[0] - coord1[0]);
+            const dLon = toRad(coord2[1] - coord1[1]);
+            const lat1 = toRad(coord1[0]);
+            const lat2 = toRad(coord2[0]);
+
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        function toRad(value) {
+            return value * Math.PI / 180;
+        }
+
+        function createTrafficjamMatrix(numLocations) {
+            const trafficjamMatrix = Array.from({ length: numLocations }, () => Array(numLocations).fill(1));
+            return trafficjamMatrix;
+        }
+
+        class Ant {
+            constructor(numLocations) {
+                this.numLocations = numLocations;
+                this.tour = [];
+                this.totalCost = 0;
+                this.totalTime = 0;
+                this.visited = new Array(numLocations).fill(false);
+            }
+
+            visitLocation(location, cost, time) {
+                this.tour.push(location);
+                this.totalCost += cost;
+                this.totalTime += time;
+                this.visited[location] = true;
+            }
+
+            clear() {
+                this.tour = [];
+                this.totalCost = 0;
+                this.totalTime = 0;
+                this.visited.fill(false);
+            }
+        }
+
+        class ACO {
+            constructor(numAnts, numIterations, alpha, beta, evaporationRate, numLocations, costMatrix, trafficjamMatrix) {
+                this.numAnts = numAnts;
+                this.numIterations = numIterations;
+                this.alpha = alpha;
+                this.beta = beta;
+                this.evaporationRate = evaporationRate;
+                this.numLocations = numLocations;
+                this.costMatrix = costMatrix;
+                this.trafficjamMatrix = trafficjamMatrix;
+                this.pheromoneMatrix = Array.from({ length: numLocations }, () => Array(numLocations).fill(1));
+                this.ants = Array.from({ length: numAnts }, () => new Ant(numLocations));
+            }
+
+            initializePheromoneMatrix() {
+                for (let i = 0; i < this.numLocations; i++) {
+                    for (let j = 0; j < this.numLocations; j++) {
+                        if (i !== j) {
+                            this.pheromoneMatrix[i][j] = (1.0 / this.costMatrix[i][j]) * (1.0 / this.trafficjamMatrix[i][j]);
+                        }
+                    }
+                }
+            }
+
+            run(startLocation, endLocation) {
+                let bestTour = null;
+                let bestCost = Infinity;
+                let bestTime = Infinity;
+
+                this.initializePheromoneMatrix();
+                updatePheromoneTable('initialPheromoneTable', this.pheromoneMatrix);
+
+                for (let iteration = 0; iteration < this.numIterations; iteration++) {
+                    for (let ant of this.ants) {
+                        ant.clear();
+                        ant.visitLocation(startLocation, 0, 0);
+
+                        while (!ant.visited[endLocation]) {
+                            const currentLocation = ant.tour[ant.tour.length - 1];
+                            const nextLocation = this.selectNextLocation(ant, currentLocation);
+                            ant.visitLocation(nextLocation, this.costMatrix[currentLocation][nextLocation], this.trafficjamMatrix[currentLocation][nextLocation]);
+                        }
+
+                        ant.visitLocation(startLocation, this.costMatrix[ant.tour[ant.tour.length - 1]][startLocation], this.trafficjamMatrix[ant.tour[ant.tour.length - 1]][startLocation]);
+
+                        if (ant.totalCost < bestCost) {
+                            bestCost = ant.totalCost;
+                            bestTour = [...ant.tour];
+                            bestTime = ant.totalTime;
+                        }
+                    }
+                    this.updatePheromones();
+                }
+
+                updatePheromoneTable('finalPheromoneTable', this.pheromoneMatrix);
+
+                return { bestTour, bestCost, bestTime };
+            }
+
+            selectNextLocation(ant, currentLocation) {
+                const probabilities = [];
+                const pheromone = this.pheromoneMatrix[currentLocation];
+                const cost = this.costMatrix[currentLocation];
+
+                for (let location = 0; location < this.numLocations; location++) {
+                    if (!ant.visited[location]) {
+                        const prob = Math.pow(pheromone[location], this.alpha) * Math.pow((1.0 / cost[location]), this.beta);
+                        probabilities.push(prob);
+                    } else {
+                        probabilities.push(0);
+                    }
+                }
+
+                const total = probabilities.reduce((sum, prob) => sum + prob, 0);
+                if (total === 0) {
+                    const unvisited = ant.visited.map((visited, index) => (!visited ? index : -1)).filter(index => index !== -1);
+                    return unvisited[Math.floor(Math.random() * unvisited.length)];
+                }
+
+                const normalizedProbabilities = probabilities.map(prob => prob / total);
+                return this.weightedRandomChoice(normalizedProbabilities);
+            }
+
+            weightedRandomChoice(probabilities) {
+                const r = Math.random();
+                let sum = 0;
+                for (let i = 0; i < probabilities.length; i++) {
+                    sum += probabilities[i];
+                    if (r <= sum) {
+                        return i;
+                    }
+                }
+            }
+
+            updatePheromones() {
+                for (let i = 0; i < this.numLocations; i++) {
+                    for (let j = 0; j < this.numLocations; j++) {
+                        this.pheromoneMatrix[i][j] *= (1 - this.evaporationRate);
+                    }
+                }
+
+                for (let ant of this.ants) {
+                    for (let i = 0; i < ant.tour.length - 1; i++) {
+                        const fromLocation = ant.tour[i];
+                        const toLocation = ant.tour[i + 1];
+                        this.pheromoneMatrix[fromLocation][toLocation] += 1.0 / ant.totalCost;
+                    }
+                }
+            }
+        }
+
+        function findRoute() {
+            const startLocation = parseInt(document.getElementById('start_location').value);
+            const endLocation = parseInt(document.getElementById('end_location').value);
+
+            if (isNaN(startLocation) || isNaN(endLocation) || startLocation < 0 || startLocation >= numLocations || endLocation < 0 || endLocation >= numLocations) {
+                alert('올바른 출발지와 도착지를 입력하세요.');
+                return;
+            }
+
+            document.getElementById('findRouteBtn').disabled = true;
+
+            if (currentPolyline) {
+                map.removeLayer(currentPolyline);
+            }
+
+            const aco = new ACO(numAnts, numIterations, alpha, beta, evaporationRate, numLocations, costMatrix, trafficjamMatrix);
+            const result = aco.run(startLocation, endLocation);
+
+            document.getElementById('result').textContent = `최적 경로: ${result.bestTour}, 총 거리: ${result.bestCost.toFixed(2)} km, 총 걸린 시간: ${result.bestTime.toFixed(2)} 시간`;
+
+            const latlngs = result.bestTour.map(index => coordinates[index]);
+            currentPolyline = L.polyline(latlngs, { color: 'red' }).addTo(map);
+            map.fitBounds(currentPolyline.getBounds());
+
+            document.getElementById('findRouteBtn').disabled = false;
+        }
+
+        function updatePheromoneTable(tableId, pheromoneMatrix) {
+            const tableBody = document.getElementById(tableId).querySelector('tbody');
+            tableBody.innerHTML = '';
+
+            for (let i = 0; i < pheromoneMatrix.length; i++) {
+                const row = tableBody.insertRow();
+                const fromCell = row.insertCell(0);
+                fromCell.textContent = i;
+
+                for (let j = 0; j < pheromoneMatrix[i].length; j++) {
+                    const pheromoneCell = row.insertCell(j + 1);
+                    pheromoneCell.textContent = pheromoneMatrix[i][j].toFixed(4);
+                }
+            }
+        }
+        
+        function createTableHeaders(tableId) {
+            const tableHead = document.getElementById(tableId).querySelector('thead tr');
+            for (let i = 0; i < numLocations; i++) {
+                const th = document.createElement('th');
+                th.textContent = i;
+                tableHead.appendChild(th);
+            }
+        }
+
+        // Create table headers on page load
+        window.onload = () => {
+            createTableHeaders('initialPheromoneTable');
+            createTableHeaders('finalPheromoneTable');
+        };
+    </script>
+</body>
+</html>

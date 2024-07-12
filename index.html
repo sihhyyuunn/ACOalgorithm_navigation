@@ -152,7 +152,7 @@
                 .openPopup();
         });
 
-        let currentPolyline = null;
+        let currentPolylines = [];
 
         function createCostMatrix(numLocations, coordinates) {
             const costMatrix = Array.from({ length: numLocations }, () => Array(numLocations).fill(0));
@@ -249,13 +249,11 @@
                         ant.clear();
                         ant.visitLocation(startLocation, 0, 0);
 
-                        while (!ant.visited[endLocation]) {
+                        while (ant.tour[ant.tour.length - 1] !== endLocation) {
                             const currentLocation = ant.tour[ant.tour.length - 1];
                             const nextLocation = this.selectNextLocation(ant, currentLocation);
                             ant.visitLocation(nextLocation, this.costMatrix[currentLocation][nextLocation], this.trafficjamMatrix[currentLocation][nextLocation]);
                         }
-
-                        ant.visitLocation(startLocation, this.costMatrix[ant.tour[ant.tour.length - 1]][startLocation], this.trafficjamMatrix[ant.tour[ant.tour.length - 1]][startLocation]);
 
                         if (ant.totalCost < bestCost) {
                             bestCost = ant.totalCost;
@@ -323,7 +321,7 @@
             }
         }
 
-        function findRoute() {
+        async function findRoute() {
             const startLocation = parseInt(document.getElementById('start_location').value);
             const endLocation = parseInt(document.getElementById('end_location').value);
 
@@ -334,9 +332,8 @@
 
             document.getElementById('findRouteBtn').disabled = true;
 
-            if (currentPolyline) {
-                map.removeLayer(currentPolyline);
-            }
+            currentPolylines.forEach(polyline => map.removeLayer(polyline));
+            currentPolylines = [];
 
             const aco = new ACO(numAnts, numIterations, alpha, beta, evaporationRate, numLocations, costMatrix, trafficjamMatrix);
             const result = aco.run(startLocation, endLocation);
@@ -344,9 +341,25 @@
             document.getElementById('result').textContent = `최적 경로: ${result.bestTour}, 총 거리: ${result.bestCost.toFixed(2)} km, 총 걸린 시간: ${result.bestTime.toFixed(2)} 시간`;
 
             const latlngs = result.bestTour.map(index => coordinates[index]);
-            currentPolyline = L.polyline(latlngs, { color: 'red' }).addTo(map);
-            map.fitBounds(currentPolyline.getBounds());
 
+            for (let i = 0; i < latlngs.length - 1; i++) {
+                const start = latlngs[i];
+                const end = latlngs[i + 1];
+
+                const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
+
+                const response = await fetch(osrmUrl);
+                const data = await response.json();
+
+                if (data.code === 'Ok') {
+                    const route = data.routes[0];
+                    const routeCoordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                    const polyline = L.polyline(routeCoordinates, { color: 'red' }).addTo(map);
+                    currentPolylines.push(polyline);
+                }
+            }
+
+            map.fitBounds(currentPolylines[0].getBounds());
             document.getElementById('findRouteBtn').disabled = false;
         }
 
@@ -365,7 +378,7 @@
                 }
             }
         }
-        
+
         function createTableHeaders(tableId) {
             const tableHead = document.getElementById(tableId).querySelector('thead tr');
             for (let i = 0; i < numLocations; i++) {
